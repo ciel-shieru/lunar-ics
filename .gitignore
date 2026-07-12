@@ -1,0 +1,14 @@
+# Binaries
+/bin/
+/lunar-ics
+*.exe
+
+# Go test/build artifacts
+*.test
+*.out
+coverage.txt
+
+# Editor/OS cruft
+.DS_Store
+.idea/
+.vscode/
