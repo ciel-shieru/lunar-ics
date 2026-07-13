@@ -1,0 +1,242 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: write
+  packages: write
+  attestations: write
+  id-token: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  SOURCE_URL: "${{ github.server_url }}/${{ github.repository }}"
+
+jobs:
+  # ── Extract version from tag ──
+  version:
+    name: Extract semver
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate and extract semver tag
+        id: meta
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Tag '$TAG' does not match semver format vMAJOR.MINOR.PATCH"
+            exit 1
+          fi
+          VERSION="${TAG#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+  # ── Build and release binaries + SBOMs ──
+  release-binaries:
+    name: Release binaries (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    needs: [version]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: amd64
+            goarch: amd64
+          - os: ubuntu-latest
+            arch: arm64
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Build binary (linux/${{ matrix.arch }})
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          CGO_ENABLED=0 go build \
+            -ldflags="-s -w" \
+            -o lunar-ics-${{ matrix.arch }} .
+
+      # ── Generate SBOM for binary using syft ──
+      - name: Upload binary artifact (for release)
+        uses: actions/upload-artifact@v4
+        with:
+          name: lunar-ics-linux-${{ matrix.arch }}
+          path: lunar-ics-${{ matrix.arch }}
+          retention-days: 1
+
+      - name: Install syft
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
+            | sh -s -- -b /usr/local/bin
+
+      - name: Generate SBOM (SPDX JSON) for binary
+        run: |
+          syft scan lunar-ics-${{ matrix.arch }} \
+            -o spdx-json=lunar-ics-linux-${{ matrix.arch }}.spdx.json
+
+      # ── Create GitHub Release and upload assets ──
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ needs.version.outputs.version }}"
+          TAG="v${VERSION}"
+
+          gh release create "$TAG" \
+            --title "Release v${VERSION}" \
+            --generate-notes \
+            --prerelease=false \
+            lunar-ics-linux-amd64=lunar-ics-linux-amd64 \
+            lunar-ics-linux-arm64=lunar-ics-linux-arm64 \
+            lunar-ics-linux-amd64.spdx.json=lunar-ics-linux-amd64.spdx.json \
+            lunar-ics-linux-arm64.spdx.json=lunar-ics-linux-arm64.spdx.json
+
+  # ── Build and push production/multi-arch image (release only) ──
+  build-prod-image:
+    name: Prod image (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    needs: [version]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: amd64
+          - os: ubuntu-latest-arm
+            arch: arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Docker meta (prod)
+        id: prod-meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ needs.version.outputs.version }}
+
+      - name: Set up Docker Buildx (${{ matrix.arch }})
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR (prod)
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push linux/${{ matrix.arch }} image
+        id: build-img
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/${{ matrix.arch }}
+          tags: ${{ steps.prod-meta.outputs.tags }}-${{ matrix.arch }}
+          labels: |
+            org.opencontainers.image.description=Production image for lunar-ics (rootless, distroless, stateless)
+            org.opencontainers.image.source=${SOURCE_URL}
+          build-args: |
+            SOURCE_URL=${SOURCE_URL}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── Create manifest list and finalize multi-arch image ──
+  create-manifest:
+    name: Create multi-arch manifest
+    runs-on: ubuntu-latest
+    needs: [version, build-prod-image]
+    steps:
+      - name: Login to GHCR (manifest)
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and push manifest list
+        run: |
+          VERSION="${{ needs.version.outputs.version }}"
+          IMAGE_NAME="${IMAGE_NAME}"
+
+          # Tag with semver version
+          docker buildx imagetools create \
+            --tag "ghcr.io/${IMAGE_NAME}:${VERSION}" \
+            "ghcr.io/${IMAGE_NAME}:${VERSION}-amd64" \
+            "ghcr.io/${IMAGE_NAME}:${VERSION}-arm64"
+
+          echo "Created manifest: ghcr.io/${IMAGE_NAME}:${VERSION} (linux/amd64 + linux/arm64)"
+
+  # ── Sign images with Cosign and export SBOMs ──
+  sign-and-sbom:
+    name: Sign image & export SBOM
+    runs-on: ubuntu-latest
+    needs: [version, create-manifest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Install Cosign and syft ──
+      - name: Install cosign
+        run: |
+          curl -sSfL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 \
+            | install -m 755 /dev/stdin /usr/local/bin/cosign
+
+      - name: Install syft
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
+            | sh -s -- -b /usr/local/bin
+
+      # ── Login to GHCR (cosign needs OIDC or password) ──
+      - name: Login to GHCR for cosign
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Sign images with Cosign (OCI signatures) ──
+      - name: Sign image with Cosign
+        run: |
+          VERSION="${{ needs.version.outputs.version }}"
+          IMAGE="ghcr.io/${IMAGE_NAME}:${VERSION}"
+
+          # Sign with keyless mode (uses OIDC from GHA)
+          cosign sign --yes "$IMAGE"
+
+      # ── Generate and upload image SBOM ──
+      - name: Pull image for SBOM scan
+        run: |
+          VERSION="${{ needs.version.outputs.version }}"
+          IMAGE="ghcr.io/${IMAGE_NAME}:${VERSION}"
+          docker pull "$IMAGE"
+
+      - name: Generate SBOM (SPDX JSON) for container image
+        run: |
+          VERSION="${{ needs.version.outputs.version }}"
+          IMAGE="ghcr.io/${IMAGE_NAME}:${VERSION}"
+          syft scan "docker:$IMAGE" \
+            -o spdx-json=lunar-ics-sbom.spdx.json
+
+      # ── Upload SBOM as release asset ──
+      - name: Attach image SBOM to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ needs.version.outputs.version }}"
+          gh release upload "v${VERSION}" lunar-ics-sbom.spdx.json
