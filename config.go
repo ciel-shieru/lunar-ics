@@ -3,6 +3,8 @@ package main
 import (
 	"flag"
 	"fmt"
+	"os"
+	"strconv"
 	"time"
 )
 
@@ -16,19 +18,59 @@ type Config struct {
 	YearsAfter  int       // number of years after current year to generate events for
 }
 
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func envInt(key string, fallback int) (int, error) {
+	s := os.Getenv(key)
+	if s == "" {
+		return fallback, nil
+	}
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, fmt.Errorf("env %q: %w", key, err)
+	}
+	return v, nil
+}
+
 func ParseConfig(args []string) (*Config, error) {
 	var cfg Config
 
+	addrDefault := envOr("LUNAR_ICS_ADDR", ":8080")
+	tzDefault := envOr("LUNAR_ICS_TZ", "Asia/Shanghai")
+	zhaiDefault := envOr("LUNAR_ICS_GUANYIN_ZHAIZAI", "false")
+
+	var guanyinZhai bool
+	if zhaiDefault == "true" || zhaiDefault == "1" {
+		guanyinZhai = true
+	}
+
 	fs := flag.NewFlagSet("lunar-ics", flag.ContinueOnError)
-	fs.StringVar(&cfg.Addr, "addr", ":8080", "HTTP server address")
-	fs.StringVar(&cfg.TZ, "tz", "Asia/Shanghai", "IANA timezone name")
-	fs.BoolVar(&cfg.GuanyinZhai, "guanyin-zhai", false, "opt-in for Guanyin vegetarian fast days")
+	fs.StringVar(&cfg.Addr, "addr", addrDefault, "HTTP server address")
+	fs.StringVar(&cfg.TZ, "tz", tzDefault, "IANA timezone name (env: LUNAR_ICS_TZ)")
+	fs.BoolVar(&cfg.GuanyinZhai, "guanyin-zhai", guanyinZhai, "opt-in for Guanyin vegetarian fast days (env: LUNAR_ICS_GUANYIN_ZHAIZAI)")
 
-	yearsBefore := fs.Int("years-before", 2, "number of years before current year to generate events for (0 = none)")
-	yearsAfter := fs.Int("years-after", 2, "number of years after current year to generate events for (0 = none)")
+	yearsBeforeEnv, err := envInt("LUNAR_ICS_YEARS_BEFORE", 2)
+	if err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	yearsAfterEnv, err := envInt("LUNAR_ICS_YEARS_AFTER", 2)
+	if err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
 
-	prayStart := fs.String("pray-start", "05:00", "start of prayer window (HH:MM)")
-	prayEnd := fs.String("pray-end", "21:00", "end of prayer window (HH:MM)")
+	yearsBefore := fs.Int("years-before", yearsBeforeEnv, "number of years before current year to generate events for (0 = none)")
+	yearsAfter := fs.Int("years-after", yearsAfterEnv, "number of years after current year to generate events for (0 = none)")
+
+	prayStartDefault := envOr("LUNAR_ICS_PRAY_START", "05:00")
+	prayEndDefault := envOr("LUNAR_ICS_PRAY_END", "21:00")
+
+	prayStart := fs.String("pray-start", prayStartDefault, "start of prayer window HH:MM (env: LUNAR_ICS_PRAY_START)")
+	prayEnd := fs.String("pray-end", prayEndDefault, "end of prayer window HH:MM (env: LUNAR_ICS_PRAY_END)")
 
 	if err := fs.Parse(args[1:]); err != nil {
 		return nil, fmt.Errorf("parse flags: %w", err)
