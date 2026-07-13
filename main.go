@@ -16,8 +16,18 @@ func main() {
 		os.Exit(1)
 	}
 
-	currentYear := time.Now().Year()
-	years := []int{currentYear, currentYear + 1, currentYear + 2}
+	loc, _ := time.LoadLocation(cfg.TZ)
+	now := time.Now().In(loc)
+	currentYear := now.Year()
+
+	var years []int
+	for i := cfg.YearsBefore; i > 0; i-- {
+		years = append(years, currentYear-i)
+	}
+	years = append(years, currentYear)
+	for i := 1; i <= cfg.YearsAfter; i++ {
+		years = append(years, currentYear+i)
+	}
 
 	events, err := GenerateEvents(years)
 	if err != nil {
