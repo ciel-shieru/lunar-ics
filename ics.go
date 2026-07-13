@@ -19,7 +19,7 @@ type IcsEvent struct {
 }
 
 // GenerateICS produces RFC 5545 compliant iCalendar output.
-func GenerateICS(events []IcsEvent, tzName string, startH, startM, endH, endM int) ([]byte, error) {
+func GenerateICS(events []IcsEvent, tzName string, startH, startM, endH, endM int, alertsEnabled bool, alertDays []int) ([]byte, error) {
 	tz, err := time.LoadLocation(tzName)
 	if err != nil {
 		return nil, fmt.Errorf("load timezone %q: %w", tzName, err)
@@ -68,6 +68,19 @@ func GenerateICS(events []IcsEvent, tzName string, startH, startM, endH, endM in
 		b.WriteString(foldLine("DESCRIPTION:", escapeText(event.Description)) + "\r\n")
 		b.WriteString("STATUS:CONFIRMED\r\n")
 		b.WriteString("TRANSP:TRANSPARENT\r\n")
+
+		if alertsEnabled && len(alertDays) > 0 {
+			for _, day := range alertDays {
+				description := fmt.Sprintf("Reminder: %s (%d days before)", event.SummaryEN, day)
+				trigger := formatTrigger(day)
+				b.WriteString("BEGIN:VALARM\r\n")
+				b.WriteString(fmt.Sprintf("TRIGGER:%s\r\n", trigger))
+				b.WriteString("ACTION:DISPLAY\r\n")
+				b.WriteString(foldLine("DESCRIPTION:", escapeText(description)) + "\r\n")
+				b.WriteString("END:VALARM\r\n")
+			}
+		}
+
 		b.WriteString("END:VEVENT\r\n")
 	}
 
@@ -89,6 +102,12 @@ func escapeText(s string) string {
 // formatTime formats a time as YYYYMMDDTHHmm00.
 func formatTime(t time.Time) string {
 	return t.Format("20060102T150405")
+}
+
+// formatTrigger produces a TRIGGER value for VALARM per RFC 5545 §3.8.6.2.
+// A day of >= 0 means the alert fires that many days before the event start.
+func formatTrigger(day int) string {
+	return fmt.Sprintf("-P%dD", day)
 }
 
 // foldLine folds a text line to fit within 75 octets per RFC 5545 §3.1.

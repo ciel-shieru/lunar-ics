@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -18,6 +19,8 @@ type Config struct {
 	YearsAfter        int       // number of years after current year to generate events for
 	LogEnabled        bool      // enable JSON request logging to stdout
 	LogTrustedProxies string    // comma-separated list of IPs/CIDRs trusted as reverse proxies
+	AlertsEnabled     bool      // include VALARM alerts in ICS output
+	AlertDays         []int     // days before event to trigger alerts (e.g. [2,1,0])
 }
 
 func envOr(key, fallback string) string {
@@ -47,6 +50,7 @@ func ParseConfig(args []string) (*Config, error) {
 	zhaiDefault := envOr("LUNAR_ICS_GUANYIN_ZHAIZAI", "false")
 	logEnabledDefault := envOr("LUNAR_ICS_LOG_ENABLED", "false")
 	logTrustedProxiesDefault := envOr("LUNAR_ICS_LOG_TRUSTED_PROXIES", "")
+	alertsEnabledDefault := envOr("LUNAR_ICS_ALERTS_ENABLED", "true")
 
 	var guanyinZhai bool
 	if zhaiDefault == "true" || zhaiDefault == "1" {
@@ -77,6 +81,10 @@ func ParseConfig(args []string) (*Config, error) {
 	yearsBefore := fs.Int("years-before", yearsBeforeEnv, "number of years before current year to generate events for (0 = none)")
 	yearsAfter := fs.Int("years-after", yearsAfterEnv, "number of years after current year to generate events for (0 = none)")
 
+	alertsEnabledFlag := fs.String("alerts-enabled", alertsEnabledDefault, "include VALARM alerts in ICS output (env: LUNAR_ICS_ALERTS_ENABLED)")
+
+	alertDays := parseAlertDays(envOr("LUNAR_ICS_ALERT_DAYS", "2,1,0"))
+
 	prayStartDefault := envOr("LUNAR_ICS_PRAY_START", "05:00")
 	prayEndDefault := envOr("LUNAR_ICS_PRAY_END", "21:00")
 
@@ -102,6 +110,16 @@ func ParseConfig(args []string) (*Config, error) {
 	cfg.YearsBefore = *yearsBefore
 	cfg.YearsAfter = *yearsAfter
 
+	if *alertsEnabledFlag == "true" || *alertsEnabledFlag == "1" {
+		cfg.AlertsEnabled = true
+	} else if *alertsEnabledFlag == "false" || *alertsEnabledFlag == "0" {
+		cfg.AlertsEnabled = false
+	} else {
+		cfg.AlertsEnabled = alertsEnabledDefault == "true" || alertsEnabledDefault == "1"
+	}
+
+	cfg.AlertDays = alertDays
+
 	if cfg.YearsBefore < 0 || cfg.YearsAfter < 0 {
 		return nil, fmt.Errorf("years-before and years-after must be non-negative")
 	}
@@ -120,4 +138,32 @@ func parseTimeOnly(s string) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("%q is not a valid HH:MM 24h time", s)
 	}
 	return t, nil
+}
+
+func parseAlertDays(s string) []int {
+	parts := strings.Split(s, ",")
+	var days []int
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		v, err := strconv.Atoi(p)
+		if err != nil || v < 0 {
+			continue
+		}
+		days = append(days, v)
+	}
+	return days
+}
+
+func alertTriggerText(day int) string {
+	switch day {
+	case 0:
+		return "Day of event"
+	case 1:
+		return "1 day before"
+	default:
+		return fmt.Sprintf("%d days before", day)
+	}
 }

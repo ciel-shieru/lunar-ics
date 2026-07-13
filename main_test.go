@@ -360,7 +360,7 @@ func TestICSValidity(t *testing.T) {
 		})
 	}
 
-	payload, err := GenerateICS(testEvents, "Asia/Shanghai", startH, startM, endH, endM)
+	payload, err := GenerateICS(testEvents, "Asia/Shanghai", startH, startM, endH, endM, true, []int{2, 1, 0})
 	if err != nil {
 		t.Fatalf("GenerateICS failed: %v", err)
 	}
@@ -459,7 +459,7 @@ func TestICSLinesFolding(t *testing.T) {
 		Date: time.Date(2024, 3, 15, 0, 0, 0, 0, time.UTC),
 	}}
 
-	payload, err := GenerateICS(events, "Asia/Shanghai", 5, 0, 21, 0)
+	payload, err := GenerateICS(events, "Asia/Shanghai", 5, 0, 21, 0, true, []int{2, 1, 0})
 	if err != nil {
 		t.Fatalf("GenerateICS failed: %v", err)
 	}
@@ -493,7 +493,7 @@ func TestICSUIDUniqueness(t *testing.T) {
 		})
 	}
 
-	payload, err := GenerateICS(events, "Asia/Shanghai", 5, 0, 21, 0)
+	payload, err := GenerateICS(events, "Asia/Shanghai", 5, 0, 21, 0, true, []int{2, 1, 0})
 	if err != nil {
 		t.Fatalf("GenerateICS failed: %v", err)
 	}
@@ -525,7 +525,7 @@ func TestICSEscaping(t *testing.T) {
 		Date: time.Date(2024, 3, 15, 0, 0, 0, 0, time.UTC),
 	}}
 
-	payload, err := GenerateICS(events, "Asia/Shanghai", 5, 0, 21, 0)
+	payload, err := GenerateICS(events, "Asia/Shanghai", 5, 0, 21, 0, true, []int{2, 1, 0})
 	if err != nil {
 		t.Fatalf("GenerateICS failed: %v", err)
 	}
@@ -887,7 +887,7 @@ func TestServeICSNotFoundHeaders(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestGenerateICSEmptyEvents(t *testing.T) {
-	payload, err := GenerateICS([]IcsEvent{}, "Asia/Shanghai", 5, 0, 21, 0)
+	payload, err := GenerateICS([]IcsEvent{}, "Asia/Shanghai", 5, 0, 21, 0, true, []int{2, 1, 0})
 	if err != nil {
 		t.Fatalf("GenerateICS with empty events failed: %v", err)
 	}
@@ -910,7 +910,7 @@ func TestGenerateICSInvalidTZ(t *testing.T) {
 		Date: time.Date(2024, 3, 15, 0, 0, 0, 0, time.UTC),
 	}}
 
-	_, err := GenerateICS(events, "Invalid/Zone", 5, 0, 21, 0)
+	_, err := GenerateICS(events, "Invalid/Zone", 5, 0, 21, 0, true, []int{2, 1, 0})
 	if err == nil {
 		t.Fatal("expected error for invalid timezone")
 	}
@@ -1345,6 +1345,276 @@ func TestParseConfigEnvTrustedProxies(t *testing.T) {
 	}
 	if cfg.LogTrustedProxies != "10.0.0.0/8, 172.16.0.0/12" {
 		t.Errorf("LogTrustedProxies: got %q, want %q", cfg.LogTrustedProxies, "10.0.0.0/8, 172.16.0.0/12")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 13. Alert Config Tests (TestAlertConfig*)
+// ---------------------------------------------------------------------------
+
+func TestParseConfigAlertsEnabledDefault(t *testing.T) {
+	cfg, err := ParseConfig([]string{"lunar-ics"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.AlertsEnabled {
+		t.Error("expected AlertsEnabled=true by default")
+	}
+
+	tests := []struct{ days string }{
+		{"2,1,0"},
+	}
+	for _, tt := range tests {
+		cfg, err = ParseConfig([]string{"lunar-ics"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(cfg.AlertDays) != 3 || cfg.AlertDays[0] != 2 || cfg.AlertDays[1] != 1 || cfg.AlertDays[2] != 0 {
+			t.Errorf("AlertDays default: got %v, want [2, 1, 0]", cfg.AlertDays)
+		}
+		_ = tt.days
+	}
+}
+
+func TestParseConfigAlertsDisabled(t *testing.T) {
+	cfg, err := ParseConfig([]string{"lunar-ics", "-alerts-enabled=false"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.AlertsEnabled {
+		t.Error("expected AlertsEnabled=false with -alerts-enabled=false")
+	}
+}
+
+func TestParseConfigAlertDaysEnv(t *testing.T) {
+	t.Setenv("LUNAR_ICS_ALERT_DAYS", "3,1")
+	cfg, err := ParseConfig([]string{"lunar-ics"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.AlertDays) != 2 || cfg.AlertDays[0] != 3 || cfg.AlertDays[1] != 1 {
+		t.Errorf("AlertDays from env: got %v, want [3, 1]", cfg.AlertDays)
+	}
+}
+
+func TestParseConfigAlertDaysCustom(t *testing.T) {
+	t.Setenv("LUNAR_ICS_ALERT_DAYS", "7,3,1")
+	cfg, err := ParseConfig([]string{"lunar-ics"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.AlertDays) != 3 || cfg.AlertDays[0] != 7 || cfg.AlertDays[1] != 3 || cfg.AlertDays[2] != 1 {
+		t.Errorf("AlertDays from env: got %v, want [7, 3, 1]", cfg.AlertDays)
+	}
+}
+
+func TestParseConfigAlertDaysInvalid(t *testing.T) {
+	t.Setenv("LUNAR_ICS_ALERT_DAYS", "-1,abc,,5")
+	cfg, err := ParseConfig([]string{"lunar-ics"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Should silently skip invalid entries and only keep valid ones
+	for _, d := range cfg.AlertDays {
+		if d < 0 {
+			t.Errorf("negative alert day should be skipped, got %d", d)
+		}
+	}
+}
+
+func TestAlertTriggerText(t *testing.T) {
+	tests := []struct{
+		day    int
+		want   string
+	}{
+		{0, "Day of event"},
+		{1, "1 day before"},
+		{2, "2 days before"},
+		{7, "7 days before"},
+	}
+	for _, tt := range tests {
+		got := alertTriggerText(tt.day)
+		if got != tt.want {
+			t.Errorf("alertTriggerText(%d) = %q, want %q", tt.day, got, tt.want)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 14. Alert ICS Output Tests (TestAlertICS*)
+// ---------------------------------------------------------------------------
+
+func TestGenerateICSWithAlerts(t *testing.T) {
+	events := []IcsEvent{{
+		UIDKey: "ALERT-TEST", SummaryEN: "Guanyin Birthday", Description: "Lunar 2/19",
+		StartHour: 5, StartMinute: 0, EndHour: 21, EndMinute: 0,
+		Date: time.Date(2024, 3, 28, 0, 0, 0, 0, time.UTC),
+	}}
+
+	payload, err := GenerateICS(events, "Asia/Shanghai", 5, 0, 21, 0, true, []int{2, 1, 0})
+	if err != nil {
+		t.Fatalf("GenerateICS failed: %v", err)
+	}
+
+	content := string(payload)
+
+	// Should have 3 VALARM blocks (one per alert day)
+	valarmCount := strings.Count(content, "BEGIN:VALARM\r\n")
+	if valarmCount != 3 {
+		t.Errorf("Expected 3 VALARM blocks, got %d", valarmCount)
+	}
+
+	endValarmCount := strings.Count(content, "END:VALARM\r\n")
+	if endValarmCount != 3 {
+		t.Errorf("Expected 3 END:VALARM blocks, got %d", endValarmCount)
+	}
+
+	// Each VALARM should have correct TRIGGER values
+	for _, day := range []int{2, 1, 0} {
+		trigger := fmt.Sprintf("-P%dD\r\n", day)
+		if !strings.Contains(content, trigger) {
+			t.Errorf("Missing TRIGGER:%s in output", trigger[:len(trigger)-2])
+		}
+	}
+
+	// Each VALARM should have ACTION:DISPLAY
+	displayCount := strings.Count(content, "ACTION:DISPLAY\r\n")
+	if displayCount != 3 {
+		t.Errorf("Expected 3 ACTION:DISPLAY blocks, got %d", displayCount)
+	}
+
+	// Check DESCRIPTION mentions the event name and days before
+	for _, day := range []int{2, 1, 0} {
+		expectedDesc := fmt.Sprintf("Reminder: Guanyin Birthday (%d days before)", day)
+		if !strings.Contains(content, expectedDesc) && !(day == 0 && strings.Contains(content, "Day of event")) {
+			t.Errorf("Missing alert description for %d days before", day)
+		}
+	}
+
+	// VALARM should appear inside VEVENT (between BEGIN:VEVENT and END:VEVENT)
+	eventStartIdx := strings.Index(content, "BEGIN:VEVENT\r\n")
+	if eventStartIdx < 0 {
+		t.Fatal("Missing BEGIN:VEVENT in output")
+	}
+	eventEndIdx := strings.Index(content[eventStartIdx:], "END:VEVENT\r\n")
+	if eventEndIdx <= 0 {
+		t.Fatal("Missing END:VEVENT after BEGIN:VEVENT")
+	}
+	eventBlock := content[eventStartIdx : eventStartIdx+eventEndIdx+len("END:VEVENT\r\n")]
+
+	valarmInEventCount := strings.Count(eventBlock, "BEGIN:VALARM\r\n")
+	if valarmInEventCount != 3 {
+		t.Errorf("Expected 3 VALARM blocks inside VEVENT, got %d", valarmInEventCount)
+	}
+}
+
+func TestGenerateICSWithoutAlerts(t *testing.T) {
+	events := []IcsEvent{{
+		UIDKey: "NO-ALERT", SummaryEN: "Test Event", Description: "",
+		StartHour: 5, StartMinute: 0, EndHour: 21, EndMinute: 0,
+		Date: time.Date(2024, 3, 15, 0, 0, 0, 0, time.UTC),
+	}}
+
+	payload, err := GenerateICS(events, "Asia/Shanghai", 5, 0, 21, 0, false, nil)
+	if err != nil {
+		t.Fatalf("GenerateICS failed: %v", err)
+	}
+
+	content := string(payload)
+
+	valarmCount := strings.Count(content, "BEGIN:VALARM\r\n")
+	if valarmCount != 0 {
+		t.Errorf("Expected 0 VALARM blocks when alerts disabled, got %d", valarmCount)
+	}
+
+	eventStartIdx := strings.Index(content, "BEGIN:VEVENT\r\n")
+	eventEndIdx := strings.Index(content[eventStartIdx:], "END:VEVENT\r\n")
+	if eventEndIdx <= 0 {
+		t.Fatal("Missing END:VEVENT after BEGIN:VEVENT")
+	}
+	eventBlock := content[eventStartIdx : eventStartIdx+eventEndIdx+len("END:VEVENT\r\n")]
+
+	if strings.Contains(eventBlock, "VALARM") {
+		t.Error("No VALARM should appear when alerts are disabled")
+	}
+}
+
+func TestGenerateICSWithEmptyAlertDays(t *testing.T) {
+	events := []IcsEvent{{
+		UIDKey: "EMPTY-DAYS", SummaryEN: "Test Event", Description: "",
+		StartHour: 5, StartMinute: 0, EndHour: 21, EndMinute: 0,
+		Date: time.Date(2024, 3, 15, 0, 0, 0, 0, time.UTC),
+	}}
+
+	payload, err := GenerateICS(events, "Asia/Shanghai", 5, 0, 21, 0, true, []int{})
+	if err != nil {
+		t.Fatalf("GenerateICS failed: %v", err)
+	}
+
+	content := string(payload)
+
+	valarmCount := strings.Count(content, "BEGIN:VALARM\r\n")
+	if valarmCount != 0 {
+		t.Errorf("Expected 0 VALARM blocks with empty alert days, got %d", valarmCount)
+	}
+}
+
+func TestGenerateICSAlertsMultipleEvents(t *testing.T) {
+	var events []IcsEvent
+	for i := 0; i < 3; i++ {
+		events = append(events, IcsEvent{
+			UIDKey:      fmt.Sprintf("ALERT-MULT-%d", i),
+			SummaryEN:   fmt.Sprintf("Event %d", i+1),
+			Description: "Test description",
+			StartHour: 5, StartMinute: 0, EndHour: 21, EndMinute: 0,
+			Date: time.Date(2024, time.Month(i+3), 15+i*7, 0, 0, 0, 0, time.UTC),
+		})
+	}
+
+	payload, err := GenerateICS(events, "Asia/Shanghai", 5, 0, 21, 0, true, []int{2, 1, 0})
+	if err != nil {
+		t.Fatalf("GenerateICS failed: %v", err)
+	}
+
+	content := string(payload)
+
+	// Should have 3 events x 3 alert days = 9 VALARM blocks total
+	valarmCount := strings.Count(content, "BEGIN:VALARM\r\n")
+	if valarmCount != 9 {
+		t.Errorf("Expected 9 VALARM blocks (3 events x 3 alerts), got %d", valarmCount)
+	}
+
+	eventStartIdx := strings.Index(content, "BEGIN:VEVENT\r\n")
+	if eventStartIdx < 0 {
+		t.Fatal("Missing BEGIN:VEVENT in output")
+	}
+	eventEndIdx := strings.Index(content[eventStartIdx:], "END:VEVENT\r\n")
+	if eventEndIdx <= 0 {
+		t.Fatal("Missing END:VEVENT after BEGIN:VEVENT")
+	}
+
+	contentAfterFirstEvent := content[eventStartIdx+eventEndIdx+len("END:VEVENT\r\n"):]
+	valarmInRestCount := strings.Count(contentAfterFirstEvent, "BEGIN:VALARM\r\n")
+	if valarmInRestCount != 6 {
+		t.Errorf("Expected 6 VALARM blocks in remaining events (2 x 3), got %d", valarmInRestCount)
+	}
+}
+
+func TestFormatTrigger(t *testing.T) {
+	tests := []struct{
+		day    int
+		want   string
+	}{
+		{0, "-P0D"},
+		{1, "-P1D"},
+		{2, "-P2D"},
+		{7, "-P7D"},
+	}
+	for _, tt := range tests {
+		got := formatTrigger(tt.day)
+		if got != tt.want {
+			t.Errorf("formatTrigger(%d) = %q, want %q", tt.day, got, tt.want)
+		}
 	}
 }
 

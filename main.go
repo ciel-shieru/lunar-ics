@@ -56,7 +56,12 @@ func main() {
 		})
 	}
 
-	payload, err := GenerateICS(icsEvents, cfg.TZ, startH, startM, endH, endM)
+	alertDays := cfg.AlertDays
+	if len(alertDays) == 0 {
+		alertDays = []int{2, 1, 0}
+	}
+
+	payload, err := GenerateICS(icsEvents, cfg.TZ, startH, startM, endH, endM, cfg.AlertsEnabled, alertDays)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
