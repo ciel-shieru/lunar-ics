@@ -22,8 +22,9 @@ Without these, `go` commands fail (`GOPATH entry is relative`).
 | Lint / static check | `go vet ./...` |
 | Build binary | `go build -o lunar-ics .` |
 | Run tests | `go test -v -count=1 ./...` |
+| Verify changes work | `go run . --addr :9000` (confirm HTTP response, then Ctrl+C) |
 
-All commands run from the repo root. The module is `lunar-ics`.
+All commands run from the repo root. The module is `lunar-ics`. Changes are not considered "working" until they have been verified with `go run`.
 
 ## Architecture
 

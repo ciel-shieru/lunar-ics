@@ -9,13 +9,15 @@ import (
 )
 
 type Config struct {
-	Addr        string
-	PrayStart   time.Time // zero-date, just the parsed time portion
-	PrayEnd     time.Time // same format as PrayStart
-	TZ          string    // IANA timezone name (e.g. "Asia/Shanghai")
-	GuanyinZhai bool      // include optional vegetarian fast days
-	YearsBefore int       // number of years before current year to generate events for
-	YearsAfter  int       // number of years after current year to generate events for
+	Addr              string
+	PrayStart         time.Time // zero-date, just the parsed time portion
+	PrayEnd           time.Time // same format as PrayStart
+	TZ                string    // IANA timezone name (e.g. "Asia/Shanghai")
+	GuanyinZhai       bool      // include optional vegetarian fast days
+	YearsBefore       int       // number of years before current year to generate events for
+	YearsAfter        int       // number of years after current year to generate events for
+	LogEnabled        bool      // enable JSON request logging to stdout
+	LogTrustedProxies string    // comma-separated list of IPs/CIDRs trusted as reverse proxies
 }
 
 func envOr(key, fallback string) string {
@@ -43,16 +45,25 @@ func ParseConfig(args []string) (*Config, error) {
 	addrDefault := envOr("LUNAR_ICS_ADDR", ":8080")
 	tzDefault := envOr("LUNAR_ICS_TZ", "Asia/Shanghai")
 	zhaiDefault := envOr("LUNAR_ICS_GUANYIN_ZHAIZAI", "false")
+	logEnabledDefault := envOr("LUNAR_ICS_LOG_ENABLED", "false")
+	logTrustedProxiesDefault := envOr("LUNAR_ICS_LOG_TRUSTED_PROXIES", "")
 
 	var guanyinZhai bool
 	if zhaiDefault == "true" || zhaiDefault == "1" {
 		guanyinZhai = true
 	}
 
+	var logEnabled bool
+	if logEnabledDefault == "true" || logEnabledDefault == "1" {
+		logEnabled = true
+	}
+
 	fs := flag.NewFlagSet("lunar-ics", flag.ContinueOnError)
 	fs.StringVar(&cfg.Addr, "addr", addrDefault, "HTTP server address")
 	fs.StringVar(&cfg.TZ, "tz", tzDefault, "IANA timezone name (env: LUNAR_ICS_TZ)")
 	fs.BoolVar(&cfg.GuanyinZhai, "guanyin-zhai", guanyinZhai, "opt-in for Guanyin vegetarian fast days (env: LUNAR_ICS_GUANYIN_ZHAIZAI)")
+	fs.BoolVar(&cfg.LogEnabled, "log-enabled", logEnabled, "enable JSON request logging to stdout (env: LUNAR_ICS_LOG_ENABLED)")
+	fs.StringVar(&cfg.LogTrustedProxies, "log-trusted-proxies", logTrustedProxiesDefault, "comma-separated list of trusted reverse proxy IPs/CIDRs for X-Forwarded-For parsing")
 
 	yearsBeforeEnv, err := envInt("LUNAR_ICS_YEARS_BEFORE", 2)
 	if err != nil {

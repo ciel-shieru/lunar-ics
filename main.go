@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"time"
 
@@ -61,10 +62,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	handler := ServeICS(payload)
+	var handler http.Handler = ServeICS(payload)
+	if cfg.LogEnabled {
+		handler = WrapWithLogging(handler, cfg.LogEnabled, cfg.LogTrustedProxies)
+	}
 	srv := NewServer(cfg.Addr, handler)
 
-	fmt.Printf("lunar-ics listening on %s with %d events\n", cfg.Addr, len(events))
+	logPrefix := "lunar-ics"
+	if cfg.LogEnabled {
+		logPrefix += " (logging enabled)"
+	}
+	fmt.Printf("%s listening on %s with %d events\n", logPrefix, cfg.Addr, len(events))
 
 	log.Fatal(srv.ListenAndServe())
 }

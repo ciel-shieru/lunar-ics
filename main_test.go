@@ -3,6 +3,7 @@ package main
 import (
 	"container/list"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1035,3 +1036,320 @@ func TestNewServer(t *testing.T) {
 		t.Errorf("MaxHeaderBytes: got %d, want %d", srv.MaxHeaderBytes, 1<<10)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// 11. JSON Logger Tests (TestJSONLogger*)
+// ---------------------------------------------------------------------------
+
+func TestLogEntryEnabled(t *testing.T) {
+	cfg, err := ParseConfig([]string{"lunar-ics", "-log-enabled"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.LogEnabled {
+		t.Error("expected LogEnabled=true with -log-enabled flag")
+	}
+}
+
+func TestLogEntryDisabledByDefault(t *testing.T) {
+	cfg, err := ParseConfig([]string{"lunar-ics"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.LogEnabled {
+		t.Error("expected LogEnabled=false by default")
+	}
+}
+
+func TestLogEntryTrustedProxies(t *testing.T) {
+	cfg, err := ParseConfig([]string{"lunar-ics", "-log-trusted-proxies", "10.0.0.0/8,192.168.1.1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.LogTrustedProxies != "10.0.0.0/8,192.168.1.1" {
+		t.Errorf("LogTrustedProxies: got %q, want %q", cfg.LogTrustedProxies, "10.0.0.0/8,192.168.1.1")
+	}
+}
+
+func TestParseTrustedProxiesValid(t *testing.T) {
+	tests := []struct {
+		input string
+		want  int // expected count of parsed entries
+	}{
+		{"", 0},
+		{"10.0.0.0/8", 1},
+		{"192.168.1.1", 1},
+		{"10.0.0.0/8,192.168.1.1", 2},
+		{"::1/128", 1},
+	}
+
+	for _, tt := range tests {
+		result, err := parseTrustedProxies(tt.input)
+		if err != nil {
+			t.Errorf("parseTrustedProxies(%q): unexpected error: %v", tt.input, err)
+			continue
+		}
+		if len(result) != tt.want {
+			t.Errorf("parseTrustedProxies(%q): got %d entries, want %d", tt.input, len(result), tt.want)
+		}
+	}
+}
+
+func TestParseTrustedProxiesInvalid(t *testing.T) {
+	_, err := parseTrustedProxies("not-an-ip")
+	if err == nil {
+		t.Fatal("expected error for invalid trusted proxy, got nil")
+	}
+}
+
+func TestExtractClientIPNoXFF(t *testing.T) {
+	ip, xff := extractClientIP("192.0.2.5:1234", "", nil)
+	if ip != "192.0.2.5" {
+		t.Errorf("extractClientIP no XFF: got %q, want %q", ip, "192.0.2.5")
+	}
+	if xff != "" {
+		t.Errorf("expected empty xff, got %q", xff)
+	}
+}
+
+func TestExtractClientIPWithXFFNoTrusted(t *testing.T) {
+	ip, xff := extractClientIP("192.0.2.5:1234", "10.0.0.1, 172.16.0.1", nil)
+	if ip != "192.0.2.5" {
+		t.Errorf("extractClientIP no trusted proxies: got %q, want %q", ip, "192.0.2.5")
+	}
+	if xff != "" {
+		t.Error("expected empty xff when not behind trusted proxy")
+	}
+}
+
+func TestExtractClientIPWithTrustedProxy(t *testing.T) {
+	cidrs := []*net.IPNet{
+		{IP: net.IPv4(10, 0, 0, 0).Mask(net.IPv4Mask(255, 0, 0, 0)), Mask: net.IPv4Mask(255, 0, 0, 0)},
+	}
+
+	ip, xff := extractClientIP("10.0.0.1:8080", "203.0.113.5, 70.0.0.1", cidrs)
+	if ip != "203.0.113.5" {
+		t.Errorf("extractClientIP trusted proxy: got %q, want %q", ip, "203.0.113.5")
+	}
+	if xff != "203.0.113.5, 70.0.0.1" {
+		t.Errorf("extractClientIP trusted proxy XFF: got %q, want %q", xff, "203.0.113.5, 70.0.0.1")
+	}
+}
+
+func TestJSONLoggerDisabledPassthrough(t *testing.T) {
+	logStore.Store(nil) // reset store
+
+	handler := JSONLogger(false, "")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", rr.Code)
+	}
+
+	entry := GetLastLogEntry()
+	if entry != nil {
+		t.Error("expected no log entry when logging is disabled")
+	}
+}
+
+func TestJSONLoggerEnabledCapturesFields(t *testing.T) {
+	logStore.Store(nil) // reset store
+
+	handler := JSONLogger(true, "")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/calendar; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"))
+	}))
+
+	req := httptest.NewRequest("GET", "/guanyin.ics", nil)
+	req.Header.Set("User-Agent", "TestClient/1.0")
+	req.Header.Set("Accept", "text/calendar, */*")
+	req.RemoteAddr = "203.0.113.5:45678"
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	entry := GetLastLogEntry()
+	if entry == nil {
+		t.Fatal("expected log entry, got nil")
+	}
+
+	tests := []struct {
+		name string
+		got  interface{}
+		want interface{}
+	}{
+		{"method", entry.Method, "GET"},
+		{"path", entry.Path, "/guanyin.ics"},
+		{"client_ip", entry.RemoteAddr, "203.0.113.5"},
+		{"remote_port", entry.RemotePort, "45678"},
+		{"status_code", entry.RespStatus, http.StatusOK},
+		{"response_content_type", entry.RespContentType, "text/calendar; charset=utf-8"},
+		{"user_agent", entry.UserAgent, "TestClient/1.0"},
+		{"accept", entry.Accept, "text/calendar, */*"},
+		{"protocol", entry.Protocol, "HTTP/1.1"},
+	}
+
+	for _, tt := range tests {
+		if tt.got != tt.want {
+			t.Errorf("%s: got %v, want %v", tt.name, tt.got, tt.want)
+		}
+	}
+
+	if entry.DurationMS < 0 {
+		t.Errorf("duration_ms should be non-negative, got %f", entry.DurationMS)
+	}
+
+	if entry.RequestID == "" {
+		t.Error("request_id should not be empty")
+	}
+
+	if entry.Timestamp == "" {
+		t.Error("timestamp should not be empty")
+	}
+}
+
+func TestJSONLoggerCaptures404(t *testing.T) {
+	logStore.Store(nil) // reset store
+
+	handler := JSONLogger(true, "")(ServeICS([]byte{}))
+
+	req := httptest.NewRequest("GET", "/nonexistent", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	entry := GetLastLogEntry()
+	if entry == nil {
+		t.Fatal("expected log entry, got nil")
+	}
+
+	if entry.RespStatus != http.StatusNotFound {
+		t.Errorf("status_code: got %d, want %d", entry.RespStatus, http.StatusNotFound)
+	}
+}
+
+func TestJSONLoggerWithTrustedProxy(t *testing.T) {
+	logStore.Store(nil) // reset store
+
+	handler := JSONLogger(true, "10.0.0.0/8")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("X-Forwarded-For", "203.0.113.5, 70.0.0.1")
+	req.RemoteAddr = "10.0.0.1:8080"
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	entry := GetLastLogEntry()
+	if entry == nil {
+		t.Fatal("expected log entry, got nil")
+	}
+
+	if entry.RemoteAddr != "203.0.113.5" {
+		t.Errorf("client_ip: got %q, want %q", entry.RemoteAddr, "203.0.113.5")
+	}
+	if entry.XForwardedFor != "203.0.113.5, 70.0.0.1" {
+		t.Errorf("x_forwarded_for: got %q, want %q", entry.XForwardedFor, "203.0.113.5, 70.0.0.1")
+	}
+}
+
+func TestJSONLoggerNotBehindTrustedProxy(t *testing.T) {
+	logStore.Store(nil) // reset store
+
+	handler := JSONLogger(true, "10.0.0.0/8")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("X-Forwarded-For", "203.0.113.5")
+	req.RemoteAddr = "192.0.2.5:1234" // not in trusted range
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	entry := GetLastLogEntry()
+	if entry == nil {
+		t.Fatal("expected log entry, got nil")
+	}
+
+	if entry.RemoteAddr != "192.0.2.5" {
+		t.Errorf("client_ip: got %q, want %q", entry.RemoteAddr, "192.0.2.5")
+	}
+	if entry.XForwardedFor != "" {
+		t.Error("x_forwarded_for should be empty when not behind trusted proxy")
+	}
+}
+
+func TestWrapWithLoggingDisabled(t *testing.T) {
+	logStore.Store(nil) // reset store
+
+	handler := WrapWithLogging(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}), false, "")
+
+	req := httptest.NewRequest("GET", "/", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", rr.Code)
+	}
+
+	entry := GetLastLogEntry()
+	if entry != nil {
+		t.Error("expected no log entry when logging is disabled via WrapWithLogging")
+	}
+}
+
+func TestGetLastLogEntryNilByDefault(t *testing.T) {
+	logStore.Store(nil) // reset store
+	entry := GetLastLogEntry()
+	if entry != nil {
+		t.Errorf("expected nil, got %+v", entry)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 12. Config environment variable tests for logging
+// ---------------------------------------------------------------------------
+
+func TestParseConfigEnvLoggingEnabled(t *testing.T) {
+	t.Setenv("LUNAR_ICS_LOG_ENABLED", "true")
+	cfg, err := ParseConfig([]string{"lunar-ics"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.LogEnabled {
+		t.Error("expected LogEnabled=true from env LUNAR_ICS_LOG_ENABLED=true")
+	}
+}
+
+func TestParseConfigEnvLoggingDisabled(t *testing.T) {
+	t.Setenv("LUNAR_ICS_LOG_ENABLED", "false")
+	cfg, err := ParseConfig([]string{"lunar-ics"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.LogEnabled {
+		t.Error("expected LogEnabled=false from env LUNAR_ICS_LOG_ENABLED=false")
+	}
+}
+
+func TestParseConfigEnvTrustedProxies(t *testing.T) {
+	t.Setenv("LUNAR_ICS_LOG_TRUSTED_PROXIES", "10.0.0.0/8, 172.16.0.0/12")
+	cfg, err := ParseConfig([]string{"lunar-ics"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.LogTrustedProxies != "10.0.0.0/8, 172.16.0.0/12" {
+		t.Errorf("LogTrustedProxies: got %q, want %q", cfg.LogTrustedProxies, "10.0.0.0/8, 172.16.0.0/12")
+	}
+}
+

@@ -34,3 +34,8 @@ func NewServer(addr string, handler http.Handler) *http.Server {
 		MaxHeaderBytes: 1 << 10, // 1KB
 	}
 }
+
+// WrapWithLogging wraps a handler with the JSONLogger middleware if logging is enabled.
+func WrapWithLogging(handler http.Handler, logEnabled bool, trustedProxies string) http.Handler {
+	return JSONLogger(logEnabled, trustedProxies)(handler)
+}
