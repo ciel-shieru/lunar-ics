@@ -730,7 +730,7 @@ func TestGenerateEventsHasGuanyinCategories(t *testing.T) {
 		categoriesFound[e.Category] = true
 	}
 
-	expectedCategories := []string{GUANYIN_BIRTH, GUANYIN_ENLIGHTENMENT, GUANYIN_RENUNCIATION, NEW_MOON_OBSERVANCE, FULL_MOON_OBSERVANCE}
+	expectedCategories := []string{GUANYIN_BIRTH, GUANYIN_ENLIGHTENMENT, GUANYIN_RENUNCIATION, QINGMING_FESTIVAL, NEW_MOON_OBSERVANCE, FULL_MOON_OBSERVANCE}
 	for _, cat := range expectedCategories {
 		if !categoriesFound[cat] {
 			t.Errorf("Missing expected category: %s", cat)
@@ -772,6 +772,39 @@ func TestGenerateEventsHasFestivalOverrides(t *testing.T) {
 		if !summariesFound[f] {
 			t.Errorf("Missing festival override: %s", f)
 		}
+	}
+}
+
+func TestGenerateEventsHasQingming(t *testing.T) {
+	now := time.Now()
+	years := []int{now.Year(), now.Year() + 1, now.Year() + 2}
+	events, err := GenerateEvents(years)
+	if err != nil {
+		t.Fatalf("GenerateEvents failed: %v", err)
+	}
+
+	qingmingFound := false
+	for _, e := range events {
+		if e.Category == QINGMING_FESTIVAL {
+			qingmingFound = true
+			if e.SummaryEN != "Qingming Festival (Tomb-Sweeping Day)" {
+				t.Errorf("Qingming SummaryEN: got %q, want %q", e.SummaryEN, "Qingming Festival (Tomb-Sweeping Day)")
+			}
+			if e.SummaryZH != "清明节" {
+				t.Errorf("Qingming SummaryZH: got %q, want %q", e.SummaryZH, "清明节")
+			}
+			if e.GregDate.Month() != 4 {
+				t.Errorf("Qingming month: got %d, want April (4)", e.GregDate.Month())
+			}
+			day := e.GregDate.Day()
+			if day < 3 || day > 7 {
+				t.Errorf("Qingming day: got %d, expected between 3-6", day)
+			}
+		}
+	}
+
+	if !qingmingFound {
+		t.Error("Missing Qingming Festival event in generated events")
 	}
 }
 

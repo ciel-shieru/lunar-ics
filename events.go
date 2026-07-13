@@ -28,6 +28,7 @@ const (
 	GUANYIN_RENUNCIATION  = "GUANYIN_RENUNCIATION"
 	NEW_MOON_OBSERVANCE   = "NEW_MOON"
 	FULL_MOON_OBSERVANCE  = "FULL_MOON"
+	QINGMING_FESTIVAL     = "QINGMING"
 )
 
 // Guanyin commemoration dates: lunar month / day pairs.
@@ -146,6 +147,16 @@ func GenerateEvents(years []int) ([]Event, error) {
 				GregDate:   time.Date(solar.GetYear(), time.Month(solar.GetMonth()), solar.GetDay(), 0, 0, 0, 0, time.UTC),
 			})
 		}
+
+		// Qingming Festival (solar term) - falls on April 4 or 5 each Gregorian year
+		qingmingDate := findQingming(gregYear)
+		events = append(events, Event{
+			Category:   QINGMING_FESTIVAL,
+			LunarYear:  lunarYear,
+			LunarMonth: 0,
+			LunarDay:   0,
+			GregDate:   qingmingDate,
+		})
 	}
 
 	// Now enrich events with summaries and descriptions.
@@ -196,6 +207,11 @@ func enrichEvent(e Event) Event {
 	case GUANYIN_RENUNCIATION:
 		e.SummaryEN = "Guanyin Bodhisattva's Renunciation"
 		e.SummaryZH = "观世音菩萨出家"
+	case QINGMING_FESTIVAL:
+		e.SummaryEN = "Qingming Festival (Tomb-Sweeping Day)"
+		e.SummaryZH = "清明节"
+		e.Description = fmt.Sprintf("Solar term Qingming (%s %d)", e.GregDate.Month(), e.GregDate.Day())
+		return e
 	case NEW_MOON_OBSERVANCE:
 		leapPrefix := ""
 		if e.LunarMonth < 0 {
@@ -231,8 +247,10 @@ func eventPriority(e Event) int {
 		return 2
 	case GUANYIN_RENUNCIATION:
 		return 3
+	case QINGMING_FESTIVAL:
+		return 4
 	default:
-		return 4 // NEW_MOON and FULL_MOON have lower priority
+		return 5 // NEW_MOON and FULL_MOON have lower priority
 	}
 }
 
@@ -245,6 +263,18 @@ func lunarMonths(leapMonth int) []int {
 		}
 	}
 	return months
+}
+
+func findQingming(year int) time.Time {
+	for day := 3; day <= 7; day++ {
+		solar := calendar.NewSolar(year, 4, day, 0, 0, 0)
+		lunar := solar.GetLunar()
+		if lunar.GetJieQi() == "清明" {
+			return time.Date(solar.GetYear(), time.Month(solar.GetMonth()), solar.GetDay(), 0, 0, 0, 0, time.UTC)
+		}
+	}
+	// Fallback to April 4 (Qingming always falls on Apr 4-6)
+	return time.Date(year, 4, 4, 0, 0, 0, 0, time.UTC)
 }
 
 func abs(x int) int {
