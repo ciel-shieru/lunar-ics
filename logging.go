@@ -3,16 +3,22 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
 
 // logStore holds the most recent LogEntry atomically.
 var logStore atomic.Pointer[LogEntry]
+
+// logMu serializes JSON marshaling and stdout writes for concurrent requests.
+var logMu sync.Mutex
 
 // LogEntry represents a single structured JSON log line for an HTTP request.
 type LogEntry struct {
@@ -192,6 +198,14 @@ func JSONLogger(enabled bool, trustedProxies string) func(http.Handler) http.Han
 			}
 
 			logStore.Store(&entry)
+
+			// Emit the log entry as a single-line JSON to stdout.
+			b, err := json.Marshal(entry)
+			if err == nil {
+				logMu.Lock()
+				fmt.Fprintln(os.Stdout, string(b))
+				logMu.Unlock()
+			}
 		})
 	}
 }
