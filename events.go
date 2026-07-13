@@ -99,39 +99,25 @@ func GenerateEvents(years []int) ([]Event, error) {
 		lYear := calendar.NewLunarYear(lunarYear)
 		leapMonth := lYear.GetLeapMonth()
 
-		// Determine how many lunar months to iterate through.
-		// A normal lunar year has 12 months; a leap year has 13 (the leap one is negative).
-		numMonths := 12
-		if leapMonth > 0 {
-			numMonths = 13
-		}
-
-		for m := 1; m <= numMonths; m++ {
-			actualMonth := m
-
-			// If we've passed the leap month, use negative month number
-			if leapMonth > 0 && m >= leapMonth {
-				actualMonth = -m
-			}
-
+		for _, m := range lunarMonths(leapMonth) {
 			// Day 1 (new moon / shuo) - always present
-			lunar := calendar.NewLunarFromYmd(lunarYear, abs(actualMonth), 1)
+			lunar := calendar.NewLunarFromYmd(lunarYear, abs(m), 1)
 			solar := lunar.GetSolar()
 			events = append(events, Event{
 				Category:   NEW_MOON_OBSERVANCE,
 				LunarYear:  lunarYear,
-				LunarMonth: actualMonth,
+				LunarMonth: m,
 				LunarDay:   1,
 				GregDate:   time.Date(solar.GetYear(), time.Month(solar.GetMonth()), solar.GetDay(), 0, 0, 0, 0, time.UTC),
 			})
 
 			// Day 15 (full moon / wang) - always present for both normal and leap months
-			lunar = calendar.NewLunarFromYmd(lunarYear, abs(actualMonth), 15)
+			lunar = calendar.NewLunarFromYmd(lunarYear, abs(m), 15)
 			solar = lunar.GetSolar()
 			events = append(events, Event{
 				Category:   FULL_MOON_OBSERVANCE,
 				LunarYear:  lunarYear,
-				LunarMonth: actualMonth,
+				LunarMonth: m,
 				LunarDay:   15,
 				GregDate:   time.Date(solar.GetYear(), time.Month(solar.GetMonth()), solar.GetDay(), 0, 0, 0, 0, time.UTC),
 			})
@@ -248,6 +234,17 @@ func eventPriority(e Event) int {
 	default:
 		return 4 // NEW_MOON and FULL_MOON have lower priority
 	}
+}
+
+func lunarMonths(leapMonth int) []int {
+	var months []int
+	for m := 1; m <= 12; m++ {
+		months = append(months, m)
+		if leapMonth > 0 && m == leapMonth {
+			months = append(months, -m)
+		}
+	}
+	return months
 }
 
 func abs(x int) int {
