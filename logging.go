@@ -10,12 +10,8 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 )
-
-// logStore holds the most recent LogEntry atomically.
-var logStore atomic.Pointer[LogEntry]
 
 // logMu serializes JSON marshaling and stdout writes for concurrent requests.
 var logMu sync.Mutex
@@ -197,8 +193,6 @@ func JSONLogger(enabled bool, trustedProxies string) func(http.Handler) http.Han
 				entry.RemotePort = "0"
 			}
 
-			logStore.Store(&entry)
-
 			// Emit the log entry as a single-line JSON to stdout.
 			b, err := json.Marshal(entry)
 			if err == nil {
@@ -208,9 +202,4 @@ func JSONLogger(enabled bool, trustedProxies string) func(http.Handler) http.Han
 			}
 		})
 	}
-}
-
-// GetLastLogEntry returns the most recent LogEntry stored by JSONLogger, or nil.
-func GetLastLogEntry() *LogEntry {
-	return logStore.Load()
 }

@@ -2,16 +2,49 @@ package main
 
 import (
 	"container/list"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/6tail/lunar-go/calendar"
 )
+
+// captureStdout temporarily replaces os.Stdout, runs fn, and returns captured output.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = w
+	fn()
+	w.Close()
+	out, _ := io.ReadAll(r)
+	os.Stdout = old
+	return string(out)
+}
+
+// parseLogEntry parses a single JSON log line from captured stdout.
+func parseLogEntry(t *testing.T, output string) LogEntry {
+	t.Helper()
+	line := strings.TrimSpace(output)
+	if line == "" {
+		t.Fatal("no log output")
+	}
+	var entry LogEntry
+	if err := json.Unmarshal([]byte(line), &entry); err != nil {
+		t.Fatalf("invalid JSON: %v\noutput: %s", err, line)
+	}
+	return entry
+}
 
 // ---------------------------------------------------------------------------
 // 1. Config Tests
@@ -1137,8 +1170,6 @@ func TestExtractClientIPWithTrustedProxy(t *testing.T) {
 }
 
 func TestJSONLoggerDisabledPassthrough(t *testing.T) {
-	logStore.Store(nil) // reset store
-
 	handler := JSONLogger(false, "")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -1150,16 +1181,9 @@ func TestJSONLoggerDisabledPassthrough(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Errorf("expected status 200, got %d", rr.Code)
 	}
-
-	entry := GetLastLogEntry()
-	if entry != nil {
-		t.Error("expected no log entry when logging is disabled")
-	}
 }
 
 func TestJSONLoggerEnabledCapturesFields(t *testing.T) {
-	logStore.Store(nil) // reset store
-
 	handler := JSONLogger(true, "")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/calendar; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
@@ -1172,12 +1196,9 @@ func TestJSONLoggerEnabledCapturesFields(t *testing.T) {
 	req.RemoteAddr = "203.0.113.5:45678"
 
 	rr := httptest.NewRecorder()
-	handler.ServeHTTP(rr, req)
+	output := captureStdout(t, func() { handler.ServeHTTP(rr, req) })
 
-	entry := GetLastLogEntry()
-	if entry == nil {
-		t.Fatal("expected log entry, got nil")
-	}
+	entry := parseLogEntry(t, output)
 
 	tests := []struct {
 		name string
@@ -1215,18 +1236,13 @@ func TestJSONLoggerEnabledCapturesFields(t *testing.T) {
 }
 
 func TestJSONLoggerCaptures404(t *testing.T) {
-	logStore.Store(nil) // reset store
-
 	handler := JSONLogger(true, "")(ServeICS([]byte{}))
 
 	req := httptest.NewRequest("GET", "/nonexistent", nil)
 	rr := httptest.NewRecorder()
-	handler.ServeHTTP(rr, req)
+	output := captureStdout(t, func() { handler.ServeHTTP(rr, req) })
 
-	entry := GetLastLogEntry()
-	if entry == nil {
-		t.Fatal("expected log entry, got nil")
-	}
+	entry := parseLogEntry(t, output)
 
 	if entry.RespStatus != http.StatusNotFound {
 		t.Errorf("status_code: got %d, want %d", entry.RespStatus, http.StatusNotFound)
@@ -1234,8 +1250,6 @@ func TestJSONLoggerCaptures404(t *testing.T) {
 }
 
 func TestJSONLoggerWithTrustedProxy(t *testing.T) {
-	logStore.Store(nil) // reset store
-
 	handler := JSONLogger(true, "10.0.0.0/8")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -1245,12 +1259,9 @@ func TestJSONLoggerWithTrustedProxy(t *testing.T) {
 	req.RemoteAddr = "10.0.0.1:8080"
 
 	rr := httptest.NewRecorder()
-	handler.ServeHTTP(rr, req)
+	output := captureStdout(t, func() { handler.ServeHTTP(rr, req) })
 
-	entry := GetLastLogEntry()
-	if entry == nil {
-		t.Fatal("expected log entry, got nil")
-	}
+	entry := parseLogEntry(t, output)
 
 	if entry.RemoteAddr != "203.0.113.5" {
 		t.Errorf("client_ip: got %q, want %q", entry.RemoteAddr, "203.0.113.5")
@@ -1261,8 +1272,6 @@ func TestJSONLoggerWithTrustedProxy(t *testing.T) {
 }
 
 func TestJSONLoggerNotBehindTrustedProxy(t *testing.T) {
-	logStore.Store(nil) // reset store
-
 	handler := JSONLogger(true, "10.0.0.0/8")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -1272,12 +1281,9 @@ func TestJSONLoggerNotBehindTrustedProxy(t *testing.T) {
 	req.RemoteAddr = "192.0.2.5:1234" // not in trusted range
 
 	rr := httptest.NewRecorder()
-	handler.ServeHTTP(rr, req)
+	output := captureStdout(t, func() { handler.ServeHTTP(rr, req) })
 
-	entry := GetLastLogEntry()
-	if entry == nil {
-		t.Fatal("expected log entry, got nil")
-	}
+	entry := parseLogEntry(t, output)
 
 	if entry.RemoteAddr != "192.0.2.5" {
 		t.Errorf("client_ip: got %q, want %q", entry.RemoteAddr, "192.0.2.5")
@@ -1288,31 +1294,20 @@ func TestJSONLoggerNotBehindTrustedProxy(t *testing.T) {
 }
 
 func TestWrapWithLoggingDisabled(t *testing.T) {
-	logStore.Store(nil) // reset store
-
 	handler := WrapWithLogging(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}), false, "")
 
 	req := httptest.NewRequest("GET", "/", nil)
 	rr := httptest.NewRecorder()
-	handler.ServeHTTP(rr, req)
+	output := captureStdout(t, func() { handler.ServeHTTP(rr, req) })
 
 	if rr.Code != http.StatusOK {
 		t.Errorf("expected status 200, got %d", rr.Code)
 	}
 
-	entry := GetLastLogEntry()
-	if entry != nil {
-		t.Error("expected no log entry when logging is disabled via WrapWithLogging")
-	}
-}
-
-func TestGetLastLogEntryNilByDefault(t *testing.T) {
-	logStore.Store(nil) // reset store
-	entry := GetLastLogEntry()
-	if entry != nil {
-		t.Errorf("expected nil, got %+v", entry)
+	if output != "" {
+		t.Error("no log output expected when logging is disabled via WrapWithLogging")
 	}
 }
 
