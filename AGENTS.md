@@ -1,5 +1,7 @@
 # AGENTS.md — lunar-ics
 
+A small, offline Go program that generates an iCalendar (.ics) feed of Guanyin (觀音 / Avalokiteśvara) prayer observance dates for the current year plus the next two years. Dates are derived from the Chinese lunisolar calendar via `lunar-go` and served over HTTP — no disk writes, no outbound network at runtime.
+
 ## Go environment (required)
 
 This repo uses Go installed via Homebrew/Linuxbrew with a non-standard GOPATH. Every bash invocation must set:
