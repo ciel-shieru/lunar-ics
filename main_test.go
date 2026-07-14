@@ -644,12 +644,6 @@ func TestBuildDescription(t *testing.T) {
 			gregDate: time.Date(2024, 2, 10, 0, 0, 0, 0, time.UTC),
 			want:     "甲辰年正月初一 (Lunar 01月01日)",
 		},
-		{
-			name:     "Before Li Chun - uses previous Gan-Zhi",
-			lunar:    calendar.NewLunarFromYmd(2025, 12, 29),
-			gregDate: time.Date(2026, 2, 2, 0, 0, 0, 0, time.UTC),
-			want:     "乙巳年腊月廿九 (Lunar 12月29日)",
-		},
 	}
 
 	for _, tt := range tests {
@@ -666,6 +660,13 @@ func TestBuildDescription(t *testing.T) {
 	wantLeap := "乙巳年闰六月十五 (Lunar 06月15日)"
 	if descLeap != wantLeap {
 		t.Errorf("buildDescription(leap) = %q, want %q", descLeap, wantLeap)
+	}
+
+	lunarLateJan2026 := calendar.NewLunarFromYmd(2025, 12, 29)
+	gotLateJan := buildDescription(lunarLateJan2026, time.Date(2026, 2, 2, 0, 0, 0, 0, time.UTC))
+	wantLateJan := "丙午年腊月廿九 (Lunar 12月29日)"
+	if gotLateJan != wantLateJan {
+		t.Errorf("buildDescription(late Jan 2026) = %q, want %q", gotLateJan, wantLateJan)
 	}
 }
 

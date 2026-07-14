@@ -83,11 +83,11 @@ func chineseNumeral(n int) string {
 func buildDescription(lunar *calendar.Lunar, gregDate time.Time) string {
 	monthAbs := abs(lunar.GetMonth())
 
-	// Determine correct Gan-Zhi year: before 立春 uses previous year's designation.
 	ganZhiYear := lunar.GetYearInGanZhi()
-	if isBeforeLiChun(gregDate, lunar.GetYear()) {
-		prevLunar := calendar.NewLunarFromYmd(lunar.GetYear()-1, monthAbs, lunar.GetDay())
-		ganZhiYear = prevLunar.GetYearInGanZhi()
+	solarYear := lunar.GetSolar().GetYear()
+	if solarYear > lunar.GetYear() {
+		nextLunar := calendar.NewLunarFromYmd(solarYear, 1, 1)
+		ganZhiYear = nextLunar.GetYearInGanZhi()
 	}
 
 	monthInChinese := lunar.GetMonthInChinese()
@@ -95,18 +95,6 @@ func buildDescription(lunar *calendar.Lunar, gregDate time.Time) string {
 	lunarMonth := fmt.Sprintf("%02d", monthAbs)
 	lunarDay := fmt.Sprintf("%02d", lunar.GetDay())
 	return fmt.Sprintf("%s年%s月%s (Lunar %s月%s日)", ganZhiYear, monthInChinese, dayInChinese, lunarMonth, lunarDay)
-}
-
-// isBeforeLiChun checks whether gregDate falls before 立春 in the given Gregorian year.
-func isBeforeLiChun(gregDate time.Time, gregYear int) bool {
-	// Create a Lunar from Jan 15 of that year to access its jieQi table.
-	janLunar := calendar.NewLunarFromYmd(gregYear, 1, 15)
-	lcSolar := janLunar.GetJieQiTable()["立春"]
-	if lcSolar == nil {
-		return gregDate.Before(time.Date(gregYear, 2, 4, 0, 0, 0, 0, time.UTC))
-	}
-	lcTime := time.Date(lcSolar.GetYear(), time.Month(lcSolar.GetMonth()), lcSolar.GetDay(), 0, 0, 0, 0, time.UTC)
-	return gregDate.Before(lcTime)
 }
 
 // GenerateEvents produces all prayer events for the given Gregorian years.
