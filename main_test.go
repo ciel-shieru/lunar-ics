@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"container/list"
 	"encoding/json"
 	"fmt"
@@ -575,14 +576,6 @@ func TestICSEscaping(t *testing.T) {
 	}
 }
 
-func unescapeICSValue(s string) string {
-	s = strings.ReplaceAll(s, "\\n", "\n")
-	s = strings.ReplaceAll(s, "\\;", ";")
-	s = strings.ReplaceAll(s, "\\,", ",")
-	s = strings.ReplaceAll(s, "\\\\", "\\")
-	return s
-}
-
 // ---------------------------------------------------------------------------
 // 5. Helper tests for internal functions (ordinal, chineseNumeral)
 // ---------------------------------------------------------------------------
@@ -837,7 +830,7 @@ func TestGenerateEventsAllHaveSummaries(t *testing.T) {
 
 func TestServeICSRoutes(t *testing.T) {
 	payload := []byte("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n")
-	handler := ServeICS(payload)
+	handler := ServeICS(payload, false, nil)
 
 	tests := []struct {
 		path     string
@@ -864,7 +857,7 @@ func TestServeICSRoutes(t *testing.T) {
 
 func TestServeICSHeaders(t *testing.T) {
 	payload := []byte("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n")
-	handler := ServeICS(payload)
+	handler := ServeICS(payload, false, nil)
 
 	req := httptest.NewRequest("GET", "/", nil)
 	rr := httptest.NewRecorder()
@@ -881,7 +874,7 @@ func TestServeICSHeaders(t *testing.T) {
 
 func TestServeICSPayload(t *testing.T) {
 	payload := []byte("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n")
-	handler := ServeICS(payload)
+	handler := ServeICS(payload, false, nil)
 
 	req := httptest.NewRequest("GET", "/guanyin.ics", nil)
 	rr := httptest.NewRecorder()
@@ -894,7 +887,7 @@ func TestServeICSPayload(t *testing.T) {
 
 func TestServeICSNotFoundHeaders(t *testing.T) {
 	payload := []byte("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n")
-	handler := ServeICS(payload)
+	handler := ServeICS(payload, false, nil)
 
 	req := httptest.NewRequest("GET", "/nonexistent", nil)
 	rr := httptest.NewRecorder()
@@ -1269,7 +1262,7 @@ func TestJSONLoggerEnabledCapturesFields(t *testing.T) {
 }
 
 func TestJSONLoggerCaptures404(t *testing.T) {
-	handler := JSONLogger(true, "")(ServeICS([]byte{}))
+	handler := JSONLogger(true, "")(ServeICS([]byte{}, false, nil))
 
 	req := httptest.NewRequest("GET", "/nonexistent", nil)
 	rr := httptest.NewRecorder()
@@ -1648,6 +1641,215 @@ func TestFormatTrigger(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("formatTrigger(%d) = %q, want %q", tt.day, got, tt.want)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 15. Dynamic Alert Tests (TestDynamicAlert*)
+// ---------------------------------------------------------------------------
+
+func TestParseTriggersEmpty(t *testing.T) {
+	result := parseTriggers("")
+	if result != nil {
+		t.Errorf("parseTriggers(\"\") = %v, want nil", result)
+	}
+}
+
+func TestParseTriggersSingle(t *testing.T) {
+	result := parseTriggers("-P5D")
+	if len(result) != 1 || result[0] != "-P5D" {
+		t.Errorf("parseTriggers(\"-P5D\") = %v, want [-P5D]", result)
+	}
+}
+
+func TestParseTriggersMultiple(t *testing.T) {
+	result := parseTriggers("-P5D,-P3D,-P1D")
+	want := []string{"-P5D", "-P3D", "-P1D"}
+	if len(result) != 3 || result[0] != want[0] || result[1] != want[1] || result[2] != want[2] {
+		t.Errorf("parseTriggers(\"-P5D,-P3D,-P1D\") = %v, want %v", result, want)
+	}
+}
+
+func TestParseTriggersWithSpaces(t *testing.T) {
+	result := parseTriggers("-P5D , -P3D , -P1D")
+	want := []string{"-P5D", "-P3D", "-P1D"}
+	if len(result) != 3 || result[0] != want[0] || result[1] != want[1] || result[2] != want[2] {
+		t.Errorf("parseTriggers with spaces = %v, want %v", result, want)
+	}
+}
+
+func TestParseTriggersEmptySegments(t *testing.T) {
+	result := parseTriggers("-P5D,,,-P1D")
+	if len(result) != 2 || result[0] != "-P5D" || result[1] != "-P1D" {
+		t.Errorf("parseTriggers with empty segments = %v, want [-P5D -P1D]", result)
+	}
+}
+
+func TestInsertAlertsForAllEvents(t *testing.T) {
+	base := []byte("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//test//EN\r\nBEGIN:VEVENT\r\nUID:test-1@guanyin-ics\r\nDTSTART;TZID=Asia/Shanghai:20240328T050000\r\nSUMMARY:Event One\r\nTRANSP:TRANSPARENT\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:test-2@guanyin-ics\r\nDTSTART;TZID=Asia/Shanghai:20240724T050000\r\nSUMMARY:Event Two\r\nTRANSP:TRANSPARENT\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")
+
+	triggers := []string{"-P5D", "-P1D"}
+	result := insertAlertsForAllEvents(base, triggers)
+	content := string(result)
+
+	// Should have 2 events x 2 triggers = 4 VALARM blocks
+	valarmCount := strings.Count(content, "BEGIN:VALARM\r\n")
+	if valarmCount != 4 {
+		t.Errorf("Expected 4 VALARM blocks, got %d", valarmCount)
+	}
+
+	for _, trigger := range triggers {
+		triggerLine := fmt.Sprintf("TRIGGER:%s\r\n", trigger)
+		count := strings.Count(content, triggerLine)
+		if count != 2 {
+			t.Errorf("Expected TRIGGER:%s to appear 2 times (once per event), got %d", trigger, count)
+		}
+	}
+
+	for _, trigger := range triggers {
+		descLine := fmt.Sprintf("Reminder: Event One (%s before)", trigger)
+		if !strings.Contains(content, descLine) {
+			t.Errorf("Missing description for 'Event One' with trigger %s", trigger)
+		}
+
+		descLine2 := fmt.Sprintf("Reminder: Event Two (%s before)", trigger)
+		if !strings.Contains(content, descLine2) {
+			t.Errorf("Missing description for 'Event Two' with trigger %s", trigger)
+		}
+	}
+
+	// Verify VALARM appears inside VEVENT blocks (before END:VEVENT)
+	event1Start := strings.Index(content, "UID:test-1@guanyin-ics")
+	if event1Start < 0 {
+		t.Fatal("Missing first event UID")
+	}
+	event1End := strings.Index(content[event1Start:], "END:VEVENT\r\n")
+	if event1End <= 0 {
+		t.Fatal("Missing END:VEVENT after first event")
+	}
+	firstEventBlock := content[event1Start : event1Start+event1End+len("END:VEVENT\r\n")]
+
+	valarmInFirstEvent := strings.Count(firstEventBlock, "BEGIN:VALARM\r\n")
+	if valarmInFirstEvent != 2 {
+		t.Errorf("Expected 2 VALARM blocks in first VEVENT, got %d", valarmInFirstEvent)
+	}
+}
+
+func TestInsertAlertsForAllEventsEmptyTriggers(t *testing.T) {
+	base := []byte(`BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//test//EN
+BEGIN:VEVENT
+UID:test@guanyin-ics
+SUMMARY:Event One
+TRANSP:TRANSPARENT
+END:VEVENT
+END:VCALENDAR`)
+
+	result := insertAlertsForAllEvents(base, nil)
+	if !bytes.Equal(result, base) {
+		t.Error("Expected no changes when triggers is empty")
+	}
+
+	resultEmptySlice := insertAlertsForAllEvents(base, []string{})
+	if !bytes.Equal(resultEmptySlice, base) {
+		t.Error("Expected no changes when triggers slice is empty")
+	}
+}
+
+func TestServeICSWithDynamicAlerts(t *testing.T) {
+	basePayload := []byte("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//test//EN\r\nBEGIN:VEVENT\r\nUID:test@guanyin-ics\r\nSUMMARY:Test Event\r\nTRANSP:TRANSPARENT\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")
+
+	handler := ServeICS(basePayload, true, []int{1})
+
+	req := httptest.NewRequest("GET", "/?alert=-P5D,-P2D", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("status: got %d, want 200", rr.Code)
+	}
+
+	content := rr.Body.String()
+	valarmCount := strings.Count(content, "BEGIN:VALARM\r\n")
+	if valarmCount != 2 {
+		t.Errorf("Expected 2 VALARM blocks from URL param, got %d", valarmCount)
+	}
+
+	if !strings.Contains(content, "TRIGGER:-P5D\r\n") {
+		t.Error("Missing TRIGGER:-P5D from URL param")
+	}
+	if !strings.Contains(content, "TRIGGER:-P2D\r\n") {
+		t.Error("Missing TRIGGER:-P2D from URL param")
+	}
+}
+
+func TestServeICSUsesConfigDefaultsWhenNoAlertParam(t *testing.T) {
+	basePayload := []byte("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//test//EN\r\nBEGIN:VEVENT\r\nUID:test@guanyin-ics\r\nSUMMARY:Test Event\r\nTRANSP:TRANSPARENT\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")
+
+	handler := ServeICS(basePayload, true, []int{3})
+
+	req := httptest.NewRequest("GET", "/guanyin.ics", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("status: got %d, want 200", rr.Code)
+	}
+
+	content := rr.Body.String()
+	valarmCount := strings.Count(content, "BEGIN:VALARM\r\n")
+	if valarmCount != 1 {
+		t.Errorf("Expected 1 VALARM block from config default, got %d", valarmCount)
+	}
+
+	if !strings.Contains(content, "TRIGGER:-P3D\r\n") {
+		t.Error("Missing TRIGGER:-P3D from config defaults")
+	}
+}
+
+func TestServeICSNoAlertsWhenDisabled(t *testing.T) {
+	basePayload := []byte("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//test//EN\r\nBEGIN:VEVENT\r\nUID:test@guanyin-ics\r\nSUMMARY:Test Event\r\nTRANSP:TRANSPARENT\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")
+
+	handler := ServeICS(basePayload, false, []int{1})
+
+	req := httptest.NewRequest("GET", "/?alert=-P5D,-P2D", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("status: got %d, want 200", rr.Code)
+	}
+
+	content := rr.Body.String()
+	valarmCount := strings.Count(content, "BEGIN:VALARM\r\n")
+	if valarmCount != 0 {
+		t.Errorf("Expected 0 VALARM blocks when alerts disabled in config, got %d (URL param should be ignored)", valarmCount)
+	}
+}
+
+func TestServeICSAlertParamOverridesConfigDays(t *testing.T) {
+	basePayload := []byte("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//test//EN\r\nBEGIN:VEVENT\r\nUID:test@guanyin-ics\r\nSUMMARY:Test Event\r\nTRANSP:TRANSPARENT\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")
+
+	handler := ServeICS(basePayload, true, []int{1})
+
+	req := httptest.NewRequest("GET", "/?alert=-P7D", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	content := rr.Body.String()
+
+	valarmCount := strings.Count(content, "BEGIN:VALARM\r\n")
+	if valarmCount != 1 {
+		t.Errorf("Expected 1 VALARM block from URL param override, got %d", valarmCount)
+	}
+
+	if !strings.Contains(content, "TRIGGER:-P7D\r\n") {
+		t.Error("Missing TRIGGER:-P7D - URL param should override config defaults")
+	}
+
+	if strings.Contains(content, "TRIGGER:-P1D\r\n") {
+		t.Error("Config default trigger -P1D should not appear when URL param is specified")
 	}
 }
 

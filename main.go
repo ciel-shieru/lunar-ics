@@ -56,18 +56,13 @@ func main() {
 		})
 	}
 
-	alertDays := cfg.AlertDays
-	if len(alertDays) == 0 {
-		alertDays = []int{2, 1, 0}
-	}
-
-	payload, err := GenerateICS(icsEvents, cfg.TZ, startH, startM, endH, endM, cfg.AlertsEnabled, alertDays)
+	basePayload, err := GenerateICS(icsEvents, cfg.TZ, startH, startM, endH, endM, false, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	var handler http.Handler = ServeICS(payload)
+	var handler http.Handler = ServeICS(basePayload, cfg.AlertsEnabled, cfg.AlertDays)
 	if cfg.LogEnabled {
 		handler = WrapWithLogging(handler, cfg.LogEnabled, cfg.LogTrustedProxies)
 	}

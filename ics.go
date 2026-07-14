@@ -134,3 +134,31 @@ func foldLine(prefix, text string) string {
 
 	return prefix + strings.Join(parts, "\r\n ")
 }
+
+// unescapeICSValue reverses RFC 5545 special character escaping.
+func unescapeICSValue(s string) string {
+	s = strings.ReplaceAll(s, "\\n", "\n")
+	s = strings.ReplaceAll(s, "\\;", ";")
+	s = strings.ReplaceAll(s, "\\,", ",")
+	s = strings.ReplaceAll(s, "\\\\", "\\")
+	return s
+}
+
+// parseTriggers parses a comma-separated list of VALARM TRIGGER values
+// from an URL query parameter (e.g. "-P5D,-P3D,-P1D").
+func parseTriggers(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	var triggers []string
+	for _, p := range parts {
+		t := strings.TrimSpace(p)
+		if t != "" {
+			triggers = append(triggers, t)
+		}
+	}
+	return triggers
+}
+
+
