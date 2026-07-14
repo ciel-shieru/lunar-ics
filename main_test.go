@@ -626,16 +626,46 @@ func TestChineseNumeral(t *testing.T) {
 }
 
 func TestBuildDescription(t *testing.T) {
-	desc := buildDescription(2024, 2, 19)
-	want := "Lunar 2024二月 month, 19th day"
-	if desc != want {
-		t.Errorf("buildDescription(2024, 2, 19) = %q, want %q", desc, want)
+	tests := []struct {
+		name       string
+		lunar      *calendar.Lunar
+		gregDate   time.Time
+		want       string
+	}{
+		{
+			name:     "Guanyin Birthday 2024",
+			lunar:    calendar.NewLunarFromYmd(2024, 2, 19),
+			gregDate: time.Date(2024, 3, 28, 0, 0, 0, 0, time.UTC),
+			want:     "甲辰年二月十九 (Lunar 02月19日)",
+		},
+		{
+			name:     "New Year's Day",
+			lunar:    calendar.NewLunarFromYmd(2024, 1, 1),
+			gregDate: time.Date(2024, 2, 10, 0, 0, 0, 0, time.UTC),
+			want:     "甲辰年正月初一 (Lunar 01月01日)",
+		},
+		{
+			name:     "Before Li Chun - uses previous Gan-Zhi",
+			lunar:    calendar.NewLunarFromYmd(2025, 12, 29),
+			gregDate: time.Date(2026, 2, 2, 0, 0, 0, 0, time.UTC),
+			want:     "乙巳年腊月廿九 (Lunar 12月29日)",
+		},
 	}
 
-	descLeap := buildDescription(2025, -6, 1)
-	wantLeap := "Lunar Leap 2025六月 month, 1th day"
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildDescription(tt.lunar, tt.gregDate)
+			if got != tt.want {
+				t.Errorf("buildDescription() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+
+	lunarLeap := calendar.NewLunarFromYmd(2025, -6, 15)
+	descLeap := buildDescription(lunarLeap, time.Date(2025, 7, 24, 0, 0, 0, 0, time.UTC))
+	wantLeap := "乙巳年闰六月十五 (Lunar 06月15日)"
 	if descLeap != wantLeap {
-		t.Errorf("buildDescription(2025, -6, 1) = %q, want %q", descLeap, wantLeap)
+		t.Errorf("buildDescription(leap) = %q, want %q", descLeap, wantLeap)
 	}
 }
 

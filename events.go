@@ -11,14 +11,15 @@ import (
 
 // Event represents a single prayer observance event.
 type Event struct {
-	Category    string // e.g. "GUANYIN_BIRTH", "NEW_MOON"
-	SummaryEN   string // English summary for ICS SUMMARY field
-	SummaryZH   string // Chinese name for display
-	Description string // Full description with lunar date info
-	LunarYear   int    // Chinese lunar year number
-	LunarMonth  int    // lunar month (negative = leap month)
-	LunarDay    int    // day within the lunar month
-	GregDate    time.Time // The Gregorian date of this event
+	Category   string       // e.g. "GUANYIN_BIRTH", "NEW_MOON"
+	SummaryEN  string       // English summary for ICS SUMMARY field
+	SummaryZH  string       // Chinese name for display
+	Description string      // Full description with lunar date info
+	LunarYear  int          // Chinese lunar year number
+	LunarMonth int          // lunar month (negative = leap month)
+	LunarDay   int          // day within the lunar month
+	GregDate   time.Time    // The Gregorian date of this event
+	lunar      *calendar.Lunar
 }
 
 // Event category identifiers for sorting and deduplication.
@@ -78,14 +79,34 @@ func chineseNumeral(n int) string {
 	return result.String()
 }
 
-// buildDescription creates the event description with lunar date info.
-func buildDescription(lunarYear, month, day int) string {
-	leapPrefix := ""
-	if month < 0 {
-		leapPrefix = "Leap "
-		month = -month
+// buildDescription creates the event description with Gan-Zhi lunar date and numeric Lunar reference.
+func buildDescription(lunar *calendar.Lunar, gregDate time.Time) string {
+	monthAbs := abs(lunar.GetMonth())
+
+	// Determine correct Gan-Zhi year: before 立春 uses previous year's designation.
+	ganZhiYear := lunar.GetYearInGanZhi()
+	if isBeforeLiChun(gregDate, lunar.GetYear()) {
+		prevLunar := calendar.NewLunarFromYmd(lunar.GetYear()-1, monthAbs, lunar.GetDay())
+		ganZhiYear = prevLunar.GetYearInGanZhi()
 	}
-	return fmt.Sprintf("Lunar %s%d%s month, %dth day", leapPrefix, lunarYear, chineseMonths[month], day)
+
+	monthInChinese := lunar.GetMonthInChinese()
+	dayInChinese := lunar.GetDayInChinese()
+	lunarMonth := fmt.Sprintf("%02d", monthAbs)
+	lunarDay := fmt.Sprintf("%02d", lunar.GetDay())
+	return fmt.Sprintf("%s年%s月%s (Lunar %s月%s日)", ganZhiYear, monthInChinese, dayInChinese, lunarMonth, lunarDay)
+}
+
+// isBeforeLiChun checks whether gregDate falls before 立春 in the given Gregorian year.
+func isBeforeLiChun(gregDate time.Time, gregYear int) bool {
+	// Create a Lunar from Jan 15 of that year to access its jieQi table.
+	janLunar := calendar.NewLunarFromYmd(gregYear, 1, 15)
+	lcSolar := janLunar.GetJieQiTable()["立春"]
+	if lcSolar == nil {
+		return gregDate.Before(time.Date(gregYear, 2, 4, 0, 0, 0, 0, time.UTC))
+	}
+	lcTime := time.Date(lcSolar.GetYear(), time.Month(lcSolar.GetMonth()), lcSolar.GetDay(), 0, 0, 0, 0, time.UTC)
+	return gregDate.Before(lcTime)
 }
 
 // GenerateEvents produces all prayer events for the given Gregorian years.
@@ -101,7 +122,6 @@ func GenerateEvents(years []int) ([]Event, error) {
 		leapMonth := lYear.GetLeapMonth()
 
 		for _, m := range lunarMonths(leapMonth) {
-			// Day 1 (new moon / shuo) - always present
 			lunar := calendar.NewLunarFromYmd(lunarYear, abs(m), 1)
 			solar := lunar.GetSolar()
 			events = append(events, Event{
@@ -110,9 +130,9 @@ func GenerateEvents(years []int) ([]Event, error) {
 				LunarMonth: m,
 				LunarDay:   1,
 				GregDate:   time.Date(solar.GetYear(), time.Month(solar.GetMonth()), solar.GetDay(), 0, 0, 0, 0, time.UTC),
+				lunar:      lunar,
 			})
 
-			// Day 15 (full moon / wang) - always present for both normal and leap months
 			lunar = calendar.NewLunarFromYmd(lunarYear, abs(m), 15)
 			solar = lunar.GetSolar()
 			events = append(events, Event{
@@ -121,10 +141,10 @@ func GenerateEvents(years []int) ([]Event, error) {
 				LunarMonth: m,
 				LunarDay:   15,
 				GregDate:   time.Date(solar.GetYear(), time.Month(solar.GetMonth()), solar.GetDay(), 0, 0, 0, 0, time.UTC),
+				lunar:      lunar,
 			})
 		}
 
-		// Guanyin commemoration days (Category A) - these use the lunar year number
 		for _, gd := range guanyinDates {
 			lunar := calendar.NewLunarFromYmd(lunarYear, gd.Month, gd.Day)
 			solar := lunar.GetSolar()
@@ -145,10 +165,10 @@ func GenerateEvents(years []int) ([]Event, error) {
 				LunarMonth: gd.Month,
 				LunarDay:   gd.Day,
 				GregDate:   time.Date(solar.GetYear(), time.Month(solar.GetMonth()), solar.GetDay(), 0, 0, 0, 0, time.UTC),
+				lunar:      lunar,
 			})
 		}
 
-		// Qingming Festival (solar term) - falls on April 4 or 5 each Gregorian year
 		qingmingDate := findQingming(gregYear)
 		events = append(events, Event{
 			Category:   QINGMING_FESTIVAL,
@@ -194,6 +214,9 @@ func enrichEvent(e Event) Event {
 	if override, ok := festivalOverrides[lunarKey]; ok {
 		e.SummaryEN = override.EN
 		e.SummaryZH = override.ZH
+		// Build description from Gregorian date for festival events.
+		festLunar := calendar.NewLunarFromDate(e.GregDate)
+		e.Description = buildDescription(festLunar, e.GregDate)
 		return e
 	}
 
@@ -210,31 +233,29 @@ func enrichEvent(e Event) Event {
 	case QINGMING_FESTIVAL:
 		e.SummaryEN = "Qingming Festival (Tomb-Sweeping Day)"
 		e.SummaryZH = "清明节"
-		e.Description = fmt.Sprintf("Solar term Qingming (%s %d)", e.GregDate.Month(), e.GregDate.Day())
+		qingmingLunar := calendar.NewLunarFromDate(e.GregDate)
+		e.Description = buildDescription(qingmingLunar, e.GregDate)
 		return e
 	case NEW_MOON_OBSERVANCE:
-		leapPrefix := ""
 		if e.LunarMonth < 0 {
-			leapPrefix = "Leap "
+			e.SummaryEN = "Leap New-Moon Observance Day"
+		} else {
+			e.SummaryEN = "New-Moon Observance Day"
 		}
-		e.SummaryEN = fmt.Sprintf("%sNew-Moon Observance Day", leapPrefix)
 		e.SummaryZH = chineseNumeral(monthAbs) + "月" + chineseNumeral(e.LunarDay) + "日 (朔)"
 	case FULL_MOON_OBSERVANCE:
-		leapPrefix := ""
 		if e.LunarMonth < 0 {
-			leapPrefix = "Leap "
+			e.SummaryEN = "Leap Full-Moon Observance Day"
+		} else {
+			e.SummaryEN = "Full-Moon Observance Day"
 		}
-		e.SummaryEN = fmt.Sprintf("%sFull-Moon Observance Day", leapPrefix)
 		e.SummaryZH = chineseNumeral(monthAbs) + "月" + chineseNumeral(e.LunarDay) + "日 (望)"
 	}
 
-	// Build description.
-	monthDisplay := abs(e.LunarMonth)
-	leapStr := ""
-	if e.LunarMonth < 0 {
-		leapStr = "Leap "
+	// Build description with Gan-Zhi lunar date and numeric Lunar reference.
+	if e.lunar != nil {
+		e.Description = buildDescription(e.lunar, e.GregDate)
 	}
-	e.Description = fmt.Sprintf("%s%s%d月%s日", leapStr, chineseMonths[monthDisplay], e.LunarYear, chineseNumeral(e.LunarDay))
 
 	return e
 }
